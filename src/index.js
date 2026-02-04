@@ -732,8 +732,6 @@ async function main() {
 
     await sleep(CONFIG.pollIntervalMs);
   }
-}
-main();
 // =========================================================
 // 🧠 AI STRATEGY CALCULATOR (PASTE AT BOTTOM OF FILE)
 // =========================================================
@@ -803,4 +801,4 @@ function getStrategyFromText(rsiStr, deltaStr, heikenStr) {
     } catch (e) {
         return `${ANSI.gray}Initializing...${ANSI.reset}`;
     }
-}
+main();
