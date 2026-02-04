@@ -681,7 +681,11 @@ async function main() {
         kv("Delta 1/3:", deltaLine.split(": ")[1] ?? deltaLine),
         kv("VWAP:", vwapLine.split(": ")[1] ?? vwapLine),
         "",
+        // 👇👇👇 NEW CODE STARTS HERE 👇👇👇
+        sepLine(), 
+        kv("AI ACTION:", getStrategyFromText(rsiLine, deltaLine, heikenLine)),
         sepLine(),
+        // 👆👆👆 NEW CODE ENDS HERE 👆👆👆
         "",
         kv("POLYMARKET:", polyHeaderValue),
         liquidity !== null ? kv("Liquidity:", formatNumber(liquidity, 0)) : null,
@@ -729,5 +733,74 @@ async function main() {
     await sleep(CONFIG.pollIntervalMs);
   }
 }
-
 main();
+// =========================================================
+// 🧠 AI STRATEGY CALCULATOR (PASTE AT BOTTOM OF FILE)
+// =========================================================
+function getStrategyFromText(rsiStr, deltaStr, heikenStr) {
+    // 1. Setup Colors (Standard ANSI)
+    const RED = "\x1b[31m";
+    const GREEN = "\x1b[32m";
+    const YELLOW = "\x1b[33m";
+    const CYAN = "\x1b[36m";
+    const BOLD = "\x1b[1m";
+    const RESET = "\x1b[0m";
+
+    try {
+        // 2. Parse RSI (Extract number from "81.0 ↑")
+        // logic: find the first number in the string
+        const rsiMatch = rsiStr.match(/(\d+(\.\d+)?)/);
+        const rsi = rsiMatch ? parseFloat(rsiMatch[0]) : 50;
+
+        // 3. Parse Deltas (Extract numbers from "+$2.54... | -$160...")
+        // logic: remove '$' and ',', then find numbers. 
+        // We split by '|' to separate 1m and 3m.
+        const parts = deltaStr.split('|');
+        const d1Raw = parts[0] || ""; 
+        const d3Raw = parts[1] || "";
+        
+        // Regex to find numbers that might be negative
+        const d1 = parseFloat(d1Raw.replace(/[^0-9.-]/g, '')) || 0;
+        const d3 = parseFloat(d3Raw.replace(/[^0-9.-]/g, '')) || 0;
+
+        // 4. Parse Heiken (Look for "green" or "red" in text)
+        const haGreen = heikenStr.toLowerCase().includes('green');
+        const haRed = heikenStr.toLowerCase().includes('red');
+
+        // --- STRATEGY LOGIC ---
+
+        // A. STRONG LONG (Trend)
+        if (d1 > 0 && d3 > 0 && haGreen && rsi < 65) {
+            return `${GREEN}${BOLD}🚀 STRONG LONG${RESET} (Trend Up)`;
+        }
+
+        // B. STRONG SHORT (Trend)
+        if (d1 < 0 && d3 < 0 && haRed && rsi > 35) {
+            return `${RED}${BOLD}🩸 STRONG SHORT${RESET} (Trend Down)`;
+        }
+
+        // C. SNIPER SHORT (Top Reversal)
+        if (rsi > 75 && d1 < 0 && haRed) {
+            return `${RED}${BOLD}🎯 SNIPER SHORT${RESET} (Top Reversal)`;
+        }
+
+        // D. SNIPER LONG (Bottom Reversal)
+        if (rsi < 25 && d1 > 0 && haGreen) {
+            return `${GREEN}${BOLD}🎯 SNIPER LONG${RESET} (Bottom Reversal)`;
+        }
+
+        // E. CHOP / WAIT
+        if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) {
+            return `${YELLOW}✋ WAIT${RESET} (Choppy / Mixed Delta)`;
+        }
+
+        // F. EXTREME ZONES
+        if (rsi >= 70) return `${YELLOW}⚠️ CAUTION${RESET} (RSI High)`;
+        if (rsi <= 30) return `${YELLOW}⚠️ CAUTION${RESET} (RSI Low)`;
+
+        return `${CYAN}💤 MONITORING${RESET}`;
+
+    } catch (e) {
+        return `${ANSI.gray}Initializing...${ANSI.reset}`;
+    }
+}
