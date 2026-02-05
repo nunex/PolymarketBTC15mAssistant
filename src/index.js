@@ -683,7 +683,7 @@ async function main() {
         "",
         // 👇👇👇 NEW CODE STARTS HERE 👇👇👇
         sepLine(), 
-        kv("AI ACTION:", getStrategyAction(rsiNow, delta1m, delta3m, consec.color, consec.count)),
+        kv("AI ACTION:", getStrategyAction(rsiNow, delta1m, delta3m, consec.color, consec.count, timeLeftMin, pLong, pShort)),
         sepLine(),
         // 👆👆👆 NEW CODE ENDS HERE 👆👆👆
         "",
@@ -737,17 +737,31 @@ async function main() {
 // ======================================================
 // 🧠 AI STRATEGY ENGINE 
 // ======================================================
-function getStrategyAction(rsi, delta1, delta3, haColor, haStreak) {
+function getStrategyAction(rsi, delta1, delta3, haColor, haStreak, timeLeft, pUp, pDown) {
     const RED = "\x1b[31m", GREEN = "\x1b[32m", YELLOW = "\x1b[33m";
     const CYAN = "\x1b[36m", RESET = "\x1b[0m", BOLD = "\x1b[1m";
 
-    // Ensure we are working with numbers
+    // --- 1. LOCK-IN DETECTION (The "Unstoppable" Check) ---
+    // If less than 90 seconds left and probability is extreme
+    if (timeLeft !== null && timeLeft <= 1.5) {
+        if (pUp >= 0.97) {
+            return `${GREEN}${BOLD}🔒 LOCKED: UP (UNSTOPPABLE)${RESET}`;
+        }
+        if (pDown >= 0.97) {
+            return `${RED}${BOLD}🔒 LOCKED: DOWN (UNSTOPPABLE)${RESET}`;
+        }
+        if (timeLeft <= 0.5) {
+            return `${YELLOW}${BOLD}🏁 FINAL SECONDS (HIGH RISK)${RESET}`;
+        }
+    }
+
+    // Standard variable parsing
     const d1 = Number(delta1) || 0;
     const d3 = Number(delta3) || 0;
     const haGreen = String(haColor).toLowerCase().includes('green');
     const haRed = String(haColor).toLowerCase().includes('red');
 
-    // 1. TREND FOLLOWING (Increased RSI cap to 70 for more activity)
+    // --- 2. TREND FOLLOWING ---
     if (d1 > 0 && d3 > 0 && haGreen && rsi < 70) {
         return `${GREEN}${BOLD}🚀 STRONG LONG (Trend)${RESET}`;
     }
@@ -755,7 +769,7 @@ function getStrategyAction(rsi, delta1, delta3, haColor, haStreak) {
         return `${RED}${BOLD}🩸 STRONG SHORT (Trend)${RESET}`;
     }
 
-    // 2. SNIPER REVERSALS (Trigger when price starts bouncing from extremes)
+    // --- 3. SNIPER REVERSALS ---
     if (rsi > 70 && d1 < 0 && haRed) {
         return `${RED}${BOLD}🎯 SNIPER SHORT (Top)${RESET}`;
     }
@@ -763,15 +777,11 @@ function getStrategyAction(rsi, delta1, delta3, haColor, haStreak) {
         return `${GREEN}${BOLD}🎯 SNIPER LONG (Bottom)${RESET}`;
     }
 
-    // 3. CHOPPY STATE
+    // --- 4. CHOPPY STATE ---
     if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) {
          return `${YELLOW}✋ WAIT (Choppy/Mixed)${RESET}`;
     }
     
-    // 4. RSI CAUTION ZONES
-    if (rsi >= 70) return `${YELLOW}⚠️ RSI HIGH (Overbought)${RESET}`;
-    if (rsi <= 30) return `${YELLOW}⚠️ RSI LOW (Oversold)${RESET}`;
-
     return `${CYAN}💤 MONITORING...${RESET}`;
 }
 
