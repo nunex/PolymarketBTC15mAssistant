@@ -731,74 +731,35 @@ async function main() {
     }
 
     await sleep(CONFIG.pollIntervalMs);
-  }
-// =========================================================
-// 🧠 AI STRATEGY CALCULATOR (PASTE AT BOTTOM OF FILE)
-// =========================================================
-function getStrategyFromText(rsiStr, deltaStr, heikenStr) {
-    // 1. Setup Colors (Standard ANSI)
+  } // This closes the while(true) loop
+} // This closes the main() function
+
+// ======================================================
+// 🧠 AI STRATEGY ENGINE 
+// ======================================================
+function getStrategyAction(rsi, delta1, delta3, haColor, haStreak) {
     const RED = "\x1b[31m";
     const GREEN = "\x1b[32m";
     const YELLOW = "\x1b[33m";
     const CYAN = "\x1b[36m";
-    const BOLD = "\x1b[1m";
     const RESET = "\x1b[0m";
+    const BOLD = "\x1b[1m";
 
-    try {
-        // 2. Parse RSI (Extract number from "81.0 ↑")
-        // logic: find the first number in the string
-        const rsiMatch = rsiStr.match(/(\d+(\.\d+)?)/);
-        const rsi = rsiMatch ? parseFloat(rsiMatch[0]) : 50;
+    let d1 = typeof delta1 === 'number' ? delta1 : parseFloat(String(delta1 || 0).replace(/[^0-9.-]+/g, ""));
+    let d3 = typeof delta3 === 'number' ? delta3 : parseFloat(String(delta3 || 0).replace(/[^0-9.-]+/g, ""));
 
-        // 3. Parse Deltas (Extract numbers from "+$2.54... | -$160...")
-        // logic: remove '$' and ',', then find numbers. 
-        // We split by '|' to separate 1m and 3m.
-        const parts = deltaStr.split('|');
-        const d1Raw = parts[0] || ""; 
-        const d3Raw = parts[1] || "";
-        
-        // Regex to find numbers that might be negative
-        const d1 = parseFloat(d1Raw.replace(/[^0-9.-]/g, '')) || 0;
-        const d3 = parseFloat(d3Raw.replace(/[^0-9.-]/g, '')) || 0;
+    const isBullishFlow = d1 > 0 && d3 > 0;
+    const isBearishFlow = d1 < 0 && d3 < 0;
+    const haGreen = String(haColor).toLowerCase().includes('green');
+    const haRed = String(haColor).toLowerCase().includes('red');
 
-        // 4. Parse Heiken (Look for "green" or "red" in text)
-        const haGreen = heikenStr.toLowerCase().includes('green');
-        const haRed = heikenStr.toLowerCase().includes('red');
+    if (isBullishFlow && haGreen && rsi < 65) return `${GREEN}${BOLD}🚀 STRONG LONG (Trend)${RESET}`;
+    if (isBearishFlow && haRed && rsi > 35) return `${RED}${BOLD}🩸 STRONG SHORT (Trend)${RESET}`;
+    if (rsi > 75 && d1 < 0 && haRed) return `${RED}${BOLD}🎯 SNIPER SHORT (Top)${RESET}`;
+    if (rsi < 25 && d1 > 0 && haGreen) return `${GREEN}${BOLD}🎯 SNIPER LONG (Bottom)${RESET}`;
+    if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) return `${YELLOW}✋ WAIT (Choppy)${RESET}`;
+    
+    return `${CYAN}💤 MONITORING...${RESET}`;
+}
 
-        // --- STRATEGY LOGIC ---
-
-        // A. STRONG LONG (Trend)
-        if (d1 > 0 && d3 > 0 && haGreen && rsi < 65) {
-            return `${GREEN}${BOLD}🚀 STRONG LONG${RESET} (Trend Up)`;
-        }
-
-        // B. STRONG SHORT (Trend)
-        if (d1 < 0 && d3 < 0 && haRed && rsi > 35) {
-            return `${RED}${BOLD}🩸 STRONG SHORT${RESET} (Trend Down)`;
-        }
-
-        // C. SNIPER SHORT (Top Reversal)
-        if (rsi > 75 && d1 < 0 && haRed) {
-            return `${RED}${BOLD}🎯 SNIPER SHORT${RESET} (Top Reversal)`;
-        }
-
-        // D. SNIPER LONG (Bottom Reversal)
-        if (rsi < 25 && d1 > 0 && haGreen) {
-            return `${GREEN}${BOLD}🎯 SNIPER LONG${RESET} (Bottom Reversal)`;
-        }
-
-        // E. CHOP / WAIT
-        if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) {
-            return `${YELLOW}✋ WAIT${RESET} (Choppy / Mixed Delta)`;
-        }
-
-        // F. EXTREME ZONES
-        if (rsi >= 70) return `${YELLOW}⚠️ CAUTION${RESET} (RSI High)`;
-        if (rsi <= 30) return `${YELLOW}⚠️ CAUTION${RESET} (RSI Low)`;
-
-        return `${CYAN}💤 MONITORING${RESET}`;
-
-    } catch (e) {
-        return `${ANSI.gray}Initializing...${ANSI.reset}`;
-    }
 main();
