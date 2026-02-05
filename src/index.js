@@ -683,7 +683,7 @@ async function main() {
         "",
         // 👇👇👇 NEW CODE STARTS HERE 👇👇👇
         sepLine(), 
-        kv("AI ACTION:", getStrategyFromText(rsiLine, deltaLine, heikenLine)),
+        kv("AI ACTION:", getStrategyAction(rsiNow, delta1m, delta3m, consec.color, consec.count)),
         sepLine(),
         // 👆👆👆 NEW CODE ENDS HERE 👆👆👆
         "",
@@ -738,27 +738,40 @@ async function main() {
 // 🧠 AI STRATEGY ENGINE 
 // ======================================================
 function getStrategyAction(rsi, delta1, delta3, haColor, haStreak) {
-    const RED = "\x1b[31m";
-    const GREEN = "\x1b[32m";
-    const YELLOW = "\x1b[33m";
-    const CYAN = "\x1b[36m";
-    const RESET = "\x1b[0m";
-    const BOLD = "\x1b[1m";
+    const RED = "\x1b[31m", GREEN = "\x1b[32m", YELLOW = "\x1b[33m";
+    const CYAN = "\x1b[36m", RESET = "\x1b[0m", BOLD = "\x1b[1m";
 
-    let d1 = typeof delta1 === 'number' ? delta1 : parseFloat(String(delta1 || 0).replace(/[^0-9.-]+/g, ""));
-    let d3 = typeof delta3 === 'number' ? delta3 : parseFloat(String(delta3 || 0).replace(/[^0-9.-]+/g, ""));
-
-    const isBullishFlow = d1 > 0 && d3 > 0;
-    const isBearishFlow = d1 < 0 && d3 < 0;
+    // Ensure we are working with numbers
+    const d1 = Number(delta1) || 0;
+    const d3 = Number(delta3) || 0;
     const haGreen = String(haColor).toLowerCase().includes('green');
     const haRed = String(haColor).toLowerCase().includes('red');
 
-    if (isBullishFlow && haGreen && rsi < 65) return `${GREEN}${BOLD}🚀 STRONG LONG (Trend)${RESET}`;
-    if (isBearishFlow && haRed && rsi > 35) return `${RED}${BOLD}🩸 STRONG SHORT (Trend)${RESET}`;
-    if (rsi > 75 && d1 < 0 && haRed) return `${RED}${BOLD}🎯 SNIPER SHORT (Top)${RESET}`;
-    if (rsi < 25 && d1 > 0 && haGreen) return `${GREEN}${BOLD}🎯 SNIPER LONG (Bottom)${RESET}`;
-    if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) return `${YELLOW}✋ WAIT (Choppy)${RESET}`;
+    // 1. TREND FOLLOWING (Increased RSI cap to 70 for more activity)
+    if (d1 > 0 && d3 > 0 && haGreen && rsi < 70) {
+        return `${GREEN}${BOLD}🚀 STRONG LONG (Trend)${RESET}`;
+    }
+    if (d1 < 0 && d3 < 0 && haRed && rsi > 30) {
+        return `${RED}${BOLD}🩸 STRONG SHORT (Trend)${RESET}`;
+    }
+
+    // 2. SNIPER REVERSALS (Trigger when price starts bouncing from extremes)
+    if (rsi > 70 && d1 < 0 && haRed) {
+        return `${RED}${BOLD}🎯 SNIPER SHORT (Top)${RESET}`;
+    }
+    if (rsi < 30 && d1 > 0 && haGreen) {
+        return `${GREEN}${BOLD}🎯 SNIPER LONG (Bottom)${RESET}`;
+    }
+
+    // 3. CHOPPY STATE
+    if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) {
+         return `${YELLOW}✋ WAIT (Choppy/Mixed)${RESET}`;
+    }
     
+    // 4. RSI CAUTION ZONES
+    if (rsi >= 70) return `${YELLOW}⚠️ RSI HIGH (Overbought)${RESET}`;
+    if (rsi <= 30) return `${YELLOW}⚠️ RSI LOW (Oversold)${RESET}`;
+
     return `${CYAN}💤 MONITORING...${RESET}`;
 }
 
