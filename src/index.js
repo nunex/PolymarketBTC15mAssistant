@@ -683,7 +683,7 @@ async function main() {
         "",
         // 👇👇👇 NEW CODE STARTS HERE 👇👇👇
         sepLine(), 
-        kv("AI ACTION:", getStrategyAction(rsiNow, delta1m, delta3m, consec.color, consec.count, timeLeftMin, pLong, pShort)),
+        kv("AI ACTION:", getStrategyFromText(rsiLine, deltaLine, heikenLine)),
         sepLine(),
         // 👆👆👆 NEW CODE ENDS HERE 👆👆👆
         "",
@@ -737,50 +737,27 @@ async function main() {
 // ======================================================
 // 🧠 AI STRATEGY ENGINE 
 // ======================================================
-function getStrategyAction(rsi, delta1, delta3, haColor, haStreak, timeLeft, pUp, pDown) {
-    const RED = "\x1b[31m", GREEN = "\x1b[32m", YELLOW = "\x1b[33m";
-    const CYAN = "\x1b[36m", RESET = "\x1b[0m", BOLD = "\x1b[1m";
+function getStrategyAction(rsi, delta1, delta3, haColor, haStreak) {
+    const RED = "\x1b[31m";
+    const GREEN = "\x1b[32m";
+    const YELLOW = "\x1b[33m";
+    const CYAN = "\x1b[36m";
+    const RESET = "\x1b[0m";
+    const BOLD = "\x1b[1m";
 
-    // --- 1. LOCK-IN DETECTION (The "Unstoppable" Check) ---
-    // If less than 90 seconds left and probability is extreme
-    if (timeLeft !== null && timeLeft <= 1.5) {
-        if (pUp >= 0.97) {
-            return `${GREEN}${BOLD}🔒 LOCKED: UP (UNSTOPPABLE)${RESET}`;
-        }
-        if (pDown >= 0.97) {
-            return `${RED}${BOLD}🔒 LOCKED: DOWN (UNSTOPPABLE)${RESET}`;
-        }
-        if (timeLeft <= 0.5) {
-            return `${YELLOW}${BOLD}🏁 FINAL SECONDS (HIGH RISK)${RESET}`;
-        }
-    }
+    let d1 = typeof delta1 === 'number' ? delta1 : parseFloat(String(delta1 || 0).replace(/[^0-9.-]+/g, ""));
+    let d3 = typeof delta3 === 'number' ? delta3 : parseFloat(String(delta3 || 0).replace(/[^0-9.-]+/g, ""));
 
-    // Standard variable parsing
-    const d1 = Number(delta1) || 0;
-    const d3 = Number(delta3) || 0;
+    const isBullishFlow = d1 > 0 && d3 > 0;
+    const isBearishFlow = d1 < 0 && d3 < 0;
     const haGreen = String(haColor).toLowerCase().includes('green');
     const haRed = String(haColor).toLowerCase().includes('red');
 
-    // --- 2. TREND FOLLOWING ---
-    if (d1 > 0 && d3 > 0 && haGreen && rsi < 70) {
-        return `${GREEN}${BOLD}🚀 STRONG LONG (Trend)${RESET}`;
-    }
-    if (d1 < 0 && d3 < 0 && haRed && rsi > 30) {
-        return `${RED}${BOLD}🩸 STRONG SHORT (Trend)${RESET}`;
-    }
-
-    // --- 3. SNIPER REVERSALS ---
-    if (rsi > 70 && d1 < 0 && haRed) {
-        return `${RED}${BOLD}🎯 SNIPER SHORT (Top)${RESET}`;
-    }
-    if (rsi < 30 && d1 > 0 && haGreen) {
-        return `${GREEN}${BOLD}🎯 SNIPER LONG (Bottom)${RESET}`;
-    }
-
-    // --- 4. CHOPPY STATE ---
-    if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) {
-         return `${YELLOW}✋ WAIT (Choppy/Mixed)${RESET}`;
-    }
+    if (isBullishFlow && haGreen && rsi < 65) return `${GREEN}${BOLD}🚀 STRONG LONG (Trend)${RESET}`;
+    if (isBearishFlow && haRed && rsi > 35) return `${RED}${BOLD}🩸 STRONG SHORT (Trend)${RESET}`;
+    if (rsi > 75 && d1 < 0 && haRed) return `${RED}${BOLD}🎯 SNIPER SHORT (Top)${RESET}`;
+    if (rsi < 25 && d1 > 0 && haGreen) return `${GREEN}${BOLD}🎯 SNIPER LONG (Bottom)${RESET}`;
+    if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) return `${YELLOW}✋ WAIT (Choppy)${RESET}`;
     
     return `${CYAN}💤 MONITORING...${RESET}`;
 }
