@@ -594,7 +594,7 @@ async function main() {
         }
       }
 
-      const priceToBeat = priceToBeatState.slug === marketSlug ? priceToBeatState.value : null;
+      const priceToBeat = parsePriceToBeat(poly.market) ?? priceToBeatState.value;
       const currentPriceBaseLine = colorPriceLine({
         label: "CURRENT PRICE",
         price: currentPrice,
