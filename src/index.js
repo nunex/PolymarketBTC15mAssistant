@@ -20,6 +20,8 @@ import { detectRegime } from "./engines/regime.js";
 import { scoreDirection, applyTimeAwareness } from "./engines/probability.js";
 import { computeEdge, decide } from "./engines/edge.js";
 import { appendCsvRow, formatNumber, formatPct, getCandleWindowTiming, sleep } from "./utils.js";
+import { validatePrice, safeNumber } from "./utils/validation.js";
+import { performanceTracker } from "./utils/performance.js";
 import { startBinanceTradeStream } from "./data/binanceWs.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -485,6 +487,15 @@ async function main() {
         ? closes[closes.length - 1] < vwapNow && closes[closes.length - 2] > vwapSeries[vwapSeries.length - 2]
         : false;
 
+      // Multi-timeframe confirmation (5m analysis)
+      const closes5m = klines5m.map(c => c.close);
+      const rsi5m = computeRsi(closes5m, CONFIG.rsiPeriod);
+      const vwap5m = computeSessionVwap(klines5m);
+      const price5m = closes5m[closes5m.length - 1];
+      const trend5mUp = price5m > vwap5m && rsi5m > 50;
+      const trend5mDown = price5m < vwap5m && rsi5m < 50;
+      const volumeRatio = volumeAvg > 0 ? volumeRecent / volumeAvg : 1;
+
       const regimeInfo = detectRegime({
         price: lastPrice,
         vwap: vwapNow,
@@ -573,8 +584,11 @@ async function main() {
       const spreadDown = poly.ok ? poly.orderbook.down.spread : null;
 
       const spread = spreadUp !== null && spreadDown !== null ? Math.max(spreadUp, spreadDown) : (spreadUp ?? spreadDown);
+      const spreadPct = spread !== null && marketUp !== null && marketUp > 0
+        ? ((spread / marketUp) * 100).toFixed(2) + '%'
+        : '-';
       const liquidity = poly.ok
-        ? (Number(poly.market?.liquidityNum) || Number(poly.market?.liquidity) || null)
+        ? (Number(poly.market?.liquidityClob) || null)
         : null;
 
       const spotPrice = wsPrice ?? lastPrice;
@@ -583,18 +597,26 @@ async function main() {
       const marketStartMs = poly.ok && poly.market?.eventStartTime ? new Date(poly.market.eventStartTime).getTime() : null;
 
       if (marketSlug && priceToBeatState.slug !== marketSlug) {
-        priceToBeatState = { slug: marketSlug, value: null, setAtMs: null };
+        // Try to parse Polymarket's stated price first
+        const parsedPrice = parsePriceToBeat(poly.market);
+        priceToBeatState = { 
+          slug: marketSlug, 
+          value: parsedPrice, 
+          setAtMs: parsedPrice !== null ? Date.now() : null 
+        };
       }
 
-      if (priceToBeatState.slug && priceToBeatState.value === null && currentPrice !== null) {
+      // If we couldn't parse Polymarket's price, capture current price when market starts
+      if (priceToBeatState.slug === marketSlug && priceToBeatState.value === null && currentPrice !== null) {
         const nowMs = Date.now();
         const okToLatch = marketStartMs === null ? true : nowMs >= marketStartMs;
         if (okToLatch) {
-          priceToBeatState = { slug: priceToBeatState.slug, value: Number(currentPrice), setAtMs: nowMs };
+          priceToBeatState.value = Number(currentPrice);
+          priceToBeatState.setAtMs = nowMs;
         }
       }
 
-      const priceToBeat = parsePriceToBeat(poly.market) ?? priceToBeatState.value;
+      const priceToBeat = priceToBeatState.slug === marketSlug ? priceToBeatState.value : null;
       const currentPriceBaseLine = colorPriceLine({
         label: "CURRENT PRICE",
         price: currentPrice,
@@ -616,8 +638,17 @@ async function main() {
       const ptbDeltaText = ptbDelta === null
         ? `${ANSI.gray}-${ANSI.reset}`
         : `${ptbDeltaColor}${ptbDelta > 0 ? "+" : ptbDelta < 0 ? "-" : ""}$${Math.abs(ptbDelta).toFixed(2)}${ANSI.reset}`;
+      
+      // Add percentage change
+      const ptbPctChange = priceToBeat !== null && priceToBeat !== 0
+        ? ((currentPrice - priceToBeat) / priceToBeat) * 100
+        : null;
+      const ptbPctText = ptbPctChange !== null
+        ? ` ${ptbDeltaColor}(${ptbPctChange > 0 ? '+' : ''}${ptbPctChange.toFixed(2)}%)${ANSI.reset}`
+        : '';
+      
       const currentPriceValue = currentPriceBaseLine.split(": ")[1] ?? currentPriceBaseLine;
-      const currentPriceLine = kv("CURRENT PRICE:", `${currentPriceValue} (${ptbDeltaText})`);
+      const currentPriceLine = kv("CURRENT PRICE:", `${currentPriceValue} ${ptbDeltaText}${ptbPctText}`);
 
       if (poly.ok && poly.market && priceToBeatState.value === null) {
         const slug = safeFileSlug(poly.market.slug || poly.market.id || "market");
@@ -667,28 +698,76 @@ async function main() {
               : ANSI.reset)
         : ANSI.reset;
 
+      // Health indicators
+      const healthIndicators = {
+        binance: wsPrice !== null ? '🟢' : '🔴',
+        chainlink: currentPrice !== null ? '🟢' : '🔴',
+        polymarket: poly.ok ? '🟢' : '🔴',
+        orderbook: poly.ok && poly.orderbook?.up ? '🟢' : '🔴'
+      };
+      const healthLine = kv("Data Sources:", 
+        `BTC ${healthIndicators.binance} | ` +
+        `Oracle ${healthIndicators.chainlink} | ` +
+        `Market ${healthIndicators.polymarket} | ` +
+        `Book ${healthIndicators.orderbook}`
+      );
+
+      // Volume metrics
+      const volume24hr = poly.ok ? safeNumber(poly.market?.volume24hrClob) : null;
+      
+      // Multi-timeframe confirmation
+      const mtfStatus = (pLong > pShort && trend5mUp) || (pShort > pLong && trend5mDown)
+        ? `${ANSI.green}✓ ALIGNED${ANSI.reset}`
+        : `${ANSI.yellow}⚠ DIVERGING${ANSI.reset}`;
+      
+      // MACD strength
+      const macdStrength = macd?.hist !== null 
+        ? Math.abs(macd.hist) > 100 ? 'STRONG' 
+          : Math.abs(macd.hist) > 50 ? 'MODERATE' 
+          : 'WEAK'
+        : '-';
+
+      // Performance stats
+      const perfStats = performanceTracker.getStats();
+
       const lines = [
         titleLine,
         marketLine,
-        kv("Time left:", `${timeColor}${fmtTimeLeft(timeLeftMin)}${ANSI.reset}`),
+        kv("Time left:", settlementLeftMin !== null 
+          ? `${timeColor}${fmtTimeLeft(settlementLeftMin)}${ANSI.reset}`
+          : `${ANSI.yellow}~${fmtTimeLeft(timeLeftMin)} (est)${ANSI.reset}`),
+        "",
+        healthLine,
         "",
         sepLine(),
         "",
         kv("TA Predict:", predictValue),
+        kv("5m Trend:", mtfStatus),
         kv("Heiken Ashi:", heikenLine.split(": ")[1] ?? heikenLine),
         kv("RSI:", rsiLine.split(": ")[1] ?? rsiLine),
-        kv("MACD:", macdLine.split(": ")[1] ?? macdLine),
+        kv("MACD:", `${macdLine.split(": ")[1] ?? macdLine} (${macdStrength})`),
         kv("Delta 1/3:", deltaLine.split(": ")[1] ?? deltaLine),
         kv("VWAP:", vwapLine.split(": ")[1] ?? vwapLine),
+        volumeRatio !== 1 ? kv("Volume Ratio:", `${volumeRatio.toFixed(2)}x ${volumeRatio > 1.5 ? '🔥' : volumeRatio < 0.5 ? '❄️' : ''}`) : null,
         "",
         // 👇👇👇 NEW CODE STARTS HERE 👇👇👇
         sepLine(), 
-        kv("AI ACTION:", getStrategyAction(rsiNow, delta1m, delta3m, consec.color, consec.count, timeLeftMin, pLong, pShort, marketUp, marketDown)),
+        kv("AI ACTION:", getStrategyAction(rsiNow, delta1m, delta3m, consec.color, consec.count, timeLeftMin, pLong, pShort, edge.marketUp, edge.marketDown, volumeRatio)),
         sepLine(),
         // 👆👆👆 NEW CODE ENDS HERE 👆👆👆
         "",
         kv("POLYMARKET:", polyHeaderValue),
-        liquidity !== null ? kv("Liquidity:", formatNumber(liquidity, 0)) : null,
+        liquidity !== null ? kv("Liquidity (CLOB):", formatNumber(liquidity, 0)) : null,
+        volume24hr !== null ? kv("24h Volume:", formatNumber(volume24hr, 0)) : null,
+        spread !== null ? kv("Spread:", `${formatNumber(spread, 4)} (${spreadPct})`) : null,
+        poly.ok && poly.orderbook?.up ? kv(
+          "Book Depth (UP):", 
+          `Bid: ${formatNumber(poly.orderbook.up.bidLiquidity || 0, 0)} | Ask: ${formatNumber(poly.orderbook.up.askLiquidity || 0, 0)}`
+        ) : null,
+        poly.ok && poly.orderbook?.down ? kv(
+          "Book Depth (DOWN):", 
+          `Bid: ${formatNumber(poly.orderbook.down.bidLiquidity || 0, 0)} | Ask: ${formatNumber(poly.orderbook.down.askLiquidity || 0, 0)}`
+        ) : null,
         settlementLeftMin !== null ? kv("Time left:", `${polyTimeLeftColor}${fmtTimeLeft(settlementLeftMin)}${ANSI.reset}`) : null,
         priceToBeat !== null ? kv("PRICE TO BEAT: ", `$${formatNumber(priceToBeat, 0)}`) : kv("PRICE TO BEAT: ", `${ANSI.gray}-${ANSI.reset}`),
         currentPriceLine,
@@ -699,10 +778,11 @@ async function main() {
         "",
         sepLine(),
         "",
+        perfStats.total > 0 ? kv("Accuracy:", `${perfStats.correct}/${perfStats.total} (${perfStats.accuracy}%) | Last 10: ${perfStats.last10Accuracy}%`) : null,
         kv("ET | Session:", `${ANSI.white}${fmtEtTime(new Date())}${ANSI.reset} | ${ANSI.white}${getBtcSession(new Date())}${ANSI.reset}`),
         "",
         sepLine(),
-        centerText(`${ANSI.dim}${ANSI.gray}created by @krajekis${ANSI.reset}`, screenWidth())
+        centerText(`${ANSI.dim}${ANSI.gray}created by @krajekis | improved by Claude${ANSI.reset}`, screenWidth())
       ].filter((x) => x !== null);
 
       renderScreen(lines.join("\n") + "\n");
@@ -737,7 +817,7 @@ async function main() {
 // ======================================================
 // 🧠 AI STRATEGY ENGINE 
 // ======================================================
-function getStrategyAction(rsi, delta1, delta3, haColor, haStreak, timeLeft, pUp, pDown, mktUp, mktDown) {
+function getStrategyAction(rsi, delta1, delta3, haColor, haStreak, timeLeft, pUp, pDown, mktUp, mktDown, volumeRatio = 1) {
     const RED = "\x1b[31m", GREEN = "\x1b[32m", YELLOW = "\x1b[33m";
     const CYAN = "\x1b[36m", RESET = "\x1b[0m", BOLD = "\x1b[1m";
 
@@ -767,16 +847,31 @@ function getStrategyAction(rsi, delta1, delta3, haColor, haStreak, timeLeft, pUp
     const d3 = Number(delta3) || 0;
     const haGreen = String(haColor).toLowerCase().includes('green');
     const haRed = String(haColor).toLowerCase().includes('red');
+    
+    // Volume analysis
+    const highVolume = volumeRatio > 1.5;
+    const lowVolume = volumeRatio < 0.5;
 
-    // --- 2. TREND FOLLOWING ---
+    // --- 2. VOLUME WARNING ---
+    if (lowVolume && timeLeft > 5) {
+        return `${CYAN}⚠️ LOW VOLUME - Wait for confirmation${RESET}`;
+    }
+
+    // --- 3. TREND FOLLOWING (Enhanced with Volume) ---
     if (d1 > 0 && d3 > 0 && haGreen && rsi < 70) {
+        if (highVolume) {
+            return `${GREEN}${BOLD}🚀 STRONG LONG (Trend + Volume)${RESET}`;
+        }
         return `${GREEN}${BOLD}🚀 STRONG LONG (Trend)${RESET}`;
     }
     if (d1 < 0 && d3 < 0 && haRed && rsi > 30) {
+        if (highVolume) {
+            return `${RED}${BOLD}🩸 STRONG SHORT (Trend + Volume)${RESET}`;
+        }
         return `${RED}${BOLD}🩸 STRONG SHORT (Trend)${RESET}`;
     }
 
-    // --- 3. SNIPER REVERSALS ---
+    // --- 4. SNIPER REVERSALS ---
     if (rsi > 70 && d1 < 0 && haRed) {
         return `${RED}${BOLD}🎯 SNIPER SHORT (Top)${RESET}`;
     }
@@ -784,7 +879,7 @@ function getStrategyAction(rsi, delta1, delta3, haColor, haStreak, timeLeft, pUp
         return `${GREEN}${BOLD}🎯 SNIPER LONG (Bottom)${RESET}`;
     }
 
-    // --- 4. CHOPPY STATE ---
+    // --- 5. CHOPPY STATE ---
     if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) {
          return `${YELLOW}✋ WAIT (Choppy/Mixed)${RESET}`;
     }
