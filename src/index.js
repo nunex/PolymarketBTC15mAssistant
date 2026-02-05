@@ -26,17 +26,6 @@ import path from "node:path";
 import readline from "node:readline";
 import { applyGlobalProxyFromEnv } from "./net/proxy.js";
 
-// ======================================================
-// 📊 GLOBAL SIMULATION TRACKER
-// ======================================================
-let simStats = {
-  totalTrades: 0,
-  wins: 0,
-  losses: 0,
-  lastMarketId: null,
-  activeTrade: null // Stores { side: 'UP'|'DOWN', priceToBeat: 0, marketId: '' }
-};
-
 function countVwapCrosses(closes, vwapSeries, lookback) {
   if (closes.length < lookback || vwapSeries.length < lookback) return null;
   let crosses = 0;
@@ -66,9 +55,7 @@ const ANSI = {
   lightRed: "\x1b[91m",
   gray: "\x1b[90m",
   white: "\x1b[97m",
-  cyan: "\x1b[36m",
-  dim: "\x1b[2m",
-  bold: "\x1b[1m"
+  dim: "\x1b[2m"
 };
 
 function screenWidth() {
@@ -608,35 +595,6 @@ async function main() {
       }
 
       const priceToBeat = priceToBeatState.slug === marketSlug ? priceToBeatState.value : null;
-
-      // --- SIMULATION SETTLEMENT LOGIC ---
-      const currentMarketId = poly.ok ? (poly.market?.id || poly.market?.slug) : null;
-      if (simStats.lastMarketId && currentMarketId !== simStats.lastMarketId) {
-          if (simStats.activeTrade) {
-              const won = simStats.activeTrade.side === "UP" 
-                  ? (currentPrice > simStats.activeTrade.priceToBeat)
-                  : (currentPrice < simStats.activeTrade.priceToBeat);
-              if (won) simStats.wins++; else simStats.losses++;
-              simStats.activeTrade = null;
-          }
-          simStats.lastMarketId = currentMarketId;
-      }
-
-      // --- STRATEGY ENGINE CALL ---
-      const aiRec = getStrategyAction(rsiNow, delta1m, delta3m, consec.color, timeLeftMin, pLong, pShort, marketUp, marketDown, spotPrice, currentPrice);
-
-      // Record sim entry
-      if (!simStats.activeTrade && currentMarketId && priceToBeat !== null) {
-          if (aiRec.includes("STRONG LONG")) {
-              simStats.activeTrade = { side: "UP", priceToBeat: priceToBeat, marketId: currentMarketId };
-              simStats.totalTrades++;
-          } else if (aiRec.includes("STRONG SHORT")) {
-              simStats.activeTrade = { side: "DOWN", priceToBeat: priceToBeat, marketId: currentMarketId };
-              simStats.totalTrades++;
-          }
-      }
-      const winRate = simStats.totalTrades > 0 ? ((simStats.wins / (simStats.wins + simStats.losses || 1)) * 100).toFixed(1) : "0.0";
-
       const currentPriceBaseLine = colorPriceLine({
         label: "CURRENT PRICE",
         price: currentPrice,
@@ -710,18 +668,12 @@ async function main() {
         : ANSI.reset;
 
       const lines = [
-        centerText(`${ANSI.white}${ANSI.bold}🚀 POLYBOT PRO TERMINAL${ANSI.reset}`, screenWidth()),
-        sepLine("="),
         titleLine,
         marketLine,
         kv("Time left:", `${timeColor}${fmtTimeLeft(timeLeftMin)}${ANSI.reset}`),
         "",
-        centerText(`${ANSI.white}${ANSI.bold}📊 SIMULATION PERFORMANCE${ANSI.reset}`, screenWidth()),
-        kv("Win Rate:", `${ANSI.green}${winRate}%${ANSI.reset} (${simStats.wins}W - ${simStats.losses}L)`),
-        kv("Status:", simStats.activeTrade ? `${ANSI.green}IN TRADE (${simStats.activeTrade.side})${ANSI.reset}` : `${ANSI.gray}SCANNING...${ANSI.reset}`),
         sepLine(),
         "",
-        kv("AI ACTION:", aiRec),
         kv("TA Predict:", predictValue),
         kv("Heiken Ashi:", heikenLine.split(": ")[1] ?? heikenLine),
         kv("RSI:", rsiLine.split(": ")[1] ?? rsiLine),
@@ -729,7 +681,11 @@ async function main() {
         kv("Delta 1/3:", deltaLine.split(": ")[1] ?? deltaLine),
         kv("VWAP:", vwapLine.split(": ")[1] ?? vwapLine),
         "",
+        // 👇👇👇 NEW CODE STARTS HERE 👇👇👇
+        sepLine(), 
+        kv("AI ACTION:", getStrategyAction(rsiNow, delta1m, delta3m, consec.color, consec.count, timeLeftMin, pLong, pShort, marketUp, marketDown)),
         sepLine(),
+        // 👆👆👆 NEW CODE ENDS HERE 👆👆👆
         "",
         kv("POLYMARKET:", polyHeaderValue),
         liquidity !== null ? kv("Liquidity:", formatNumber(liquidity, 0)) : null,
@@ -781,41 +737,57 @@ async function main() {
 // ======================================================
 // 🧠 AI STRATEGY ENGINE 
 // ======================================================
-function getStrategyAction(rsi, delta1, delta3, haColor, timeLeft, pUp, pDown, mktUp, mktDown, spot, clPrice) {
+function getStrategyAction(rsi, delta1, delta3, haColor, haStreak, timeLeft, pUp, pDown, mktUp, mktDown) {
     const RED = "\x1b[31m", GREEN = "\x1b[32m", YELLOW = "\x1b[33m";
     const CYAN = "\x1b[36m", RESET = "\x1b[0m", BOLD = "\x1b[1m";
 
-    const gap = spot - clPrice;
-
-    // 1. LOCK-IN DETECTION (Market & Model)
+    // --- 1. LOCK-IN DETECTION (Market & Model) ---
+    // Check if we are in the last 2 minutes
     if (timeLeft !== null && timeLeft <= 2.0) {
+        
+        // Check if Model OR Market says it's over (Threshold: 98% or 0.98)
         const isUpLocked = pUp >= 0.98 || mktUp >= 0.98;
         const isDownLocked = pDown >= 0.98 || mktDown >= 0.98;
 
-        if (isUpLocked) return `${GREEN}${BOLD}🔒 LOCKED: UP (UNSTOPPABLE)${RESET}`;
-        if (isDownLocked) return `${RED}${BOLD}🔒 LOCKED: DOWN (UNSTOPPABLE)${RESET}`;
-        if (timeLeft <= 0.5 && (mktUp > 0.95 || mktDown > 0.95)) return `${YELLOW}${BOLD}🏁 FINALIZED${RESET}`;
+        if (isUpLocked) {
+            return `${GREEN}${BOLD}🔒 LOCKED: UP (UNSTOPPABLE)${RESET}`;
+        }
+        if (isDownLocked) {
+            return `${RED}${BOLD}🔒 LOCKED: DOWN (UNSTOPPABLE)${RESET}`;
+        }
+
+        // If very little time left and prices are already extreme
+        if (timeLeft <= 0.5 && (mktUp > 0.95 || mktDown > 0.95)) {
+            return `${YELLOW}${BOLD}🏁 FINALIZED${RESET}`;
+        }
     }
 
-    // 2. ARBITRAGE SIGNAL
-    if (gap > 25) return `${GREEN}${BOLD}💰 ARB: LONG (Binance Lead)${RESET}`;
-    if (gap < -25) return `${RED}${BOLD}💰 ARB: SHORT (Binance Lead)${RESET}`;
-
+    // Standard variable parsing for trading logic
     const d1 = Number(delta1) || 0;
     const d3 = Number(delta3) || 0;
     const haGreen = String(haColor).toLowerCase().includes('green');
     const haRed = String(haColor).toLowerCase().includes('red');
 
-    // 3. TREND FOLLOWING
-    if (d1 > 0 && d3 > 0 && haGreen && rsi < 70) return `${GREEN}${BOLD}🚀 STRONG LONG (Trend)${RESET}`;
-    if (d1 < 0 && d3 < 0 && haRed && rsi > 30) return `${RED}${BOLD}🩸 STRONG SHORT (Trend)${RESET}`;
+    // --- 2. TREND FOLLOWING ---
+    if (d1 > 0 && d3 > 0 && haGreen && rsi < 70) {
+        return `${GREEN}${BOLD}🚀 STRONG LONG (Trend)${RESET}`;
+    }
+    if (d1 < 0 && d3 < 0 && haRed && rsi > 30) {
+        return `${RED}${BOLD}🩸 STRONG SHORT (Trend)${RESET}`;
+    }
 
-    // 4. SNIPER REVERSALS
-    if (rsi > 70 && d1 < 0 && haRed) return `${RED}${BOLD}🎯 SNIPER SHORT (Top)${RESET}`;
-    if (rsi < 30 && d1 > 0 && haGreen) return `${GREEN}${BOLD}🎯 SNIPER LONG (Bottom)${RESET}`;
+    // --- 3. SNIPER REVERSALS ---
+    if (rsi > 70 && d1 < 0 && haRed) {
+        return `${RED}${BOLD}🎯 SNIPER SHORT (Top)${RESET}`;
+    }
+    if (rsi < 30 && d1 > 0 && haGreen) {
+        return `${GREEN}${BOLD}🎯 SNIPER LONG (Bottom)${RESET}`;
+    }
 
-    // 5. CHOPPY STATE
-    if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) return `${YELLOW}✋ WAIT (Choppy/Mixed)${RESET}`;
+    // --- 4. CHOPPY STATE ---
+    if ((d1 > 0 && d3 < 0) || (d1 < 0 && d3 > 0)) {
+         return `${YELLOW}✋ WAIT (Choppy/Mixed)${RESET}`;
+    }
     
     return `${CYAN}💤 MONITORING...${RESET}`;
 }
